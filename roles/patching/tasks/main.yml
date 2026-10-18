@@ -1,0 +1,264 @@
+---
+- name: Initialize host operation record for patching workflow
+  ansible.builtin.set_fact:
+    host_operation_record:
+      hostname: "{{ inventory_hostname }}"
+      ip_address: "{{ ansible_host }}"
+      os_family: "{{ ansible_facts['os_family'] | default('unknown') }}"
+      distribution: "{{ ansible_facts['distribution'] | default('unknown') }}"
+      distribution_version: "{{ ansible_facts['distribution_version'] | default('unknown') }}"
+      kernel: "{{ ansible_facts['kernel'] | default('unknown') }}"
+      workflow_mode: "{{ 'patch-check' if ansible_check_mode else 'patch' }}"
+      check_mode: "{{ ansible_check_mode | bool }}"
+      timestamp_utc: "{{ ansible_facts['date_time']['iso8601'] | default('unknown') }}"
+      overall_status: "pending"
+      failure_stage: "none"
+      failure_reason: ""
+      pending_updates_count: 0
+      pending_security_updates_count: 0
+      upgradable_packages_sample: []
+      reboot_required: false
+      patch_applied: false
+      reboot_performed: false
+      maintenance_mode_used: false
+      compliance_passed: true
+      compliance_checks: {}
+      health_check_passed: false
+      health_check_status_code: 0
+      health_check_payload: {}
+
+- name: Execute staged patching workflow with rescue and reporting capture
+  block:
+    - name: Set active stage to os_assertion
+      ansible.builtin.set_fact:
+        current_patch_stage: "os_assertion"
+
+    - name: Assert target OS family is Debian/Ubuntu
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['os_family'] == supported_os_family
+          - ansible_facts['distribution'] in supported_distributions
+        fail_msg: "Unsupported OS family {{ ansible_facts['os_family'] }} ({{ ansible_facts['distribution'] }}). Only Debian/Ubuntu apt is supported."
+
+    - name: Set active stage to pre_patch_audit
+      ansible.builtin.set_fact:
+        current_patch_stage: "pre_patch_audit"
+
+    - name: Update apt package cache before inspection when not in check mode
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: "{{ patch_cache_valid_time }}"
+      when:
+        - patch_update_cache | bool
+        - not (ansible_check_mode | bool)
+
+    - name: Query simulated upgradable packages before patching
+      ansible.builtin.command:
+        cmd: apt-get -s -o Debug::NoLocking=true upgrade
+      register: pre_patch_sim
+      changed_when: false
+      check_mode: false
+
+    - name: Parse pre-patch pending update counts
+      ansible.builtin.set_fact:
+        pre_patch_inst_lines: "{{ pre_patch_sim.stdout_lines | select('match', '^Inst ') | list }}"
+        pre_patch_sec_lines: "{{ pre_patch_sim.stdout_lines | select('match', '^Inst .*security.*') | list }}"
+
+    - name: Set active stage to pre_flight_health_check
+      ansible.builtin.set_fact:
+        current_patch_stage: "pre_flight_health_check"
+
+    - name: Verify nginx health endpoint before starting maintenance or patching
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:{{ nginx_listen_port }}{{ health_endpoint_path }}"
+        method: GET
+        return_content: true
+        status_code: "{{ health_expected_status }}"
+      register: pre_patch_health
+      retries: "{{ health_check_retries }}"
+      delay: "{{ health_check_delay }}"
+      until: pre_patch_health.status == (health_expected_status | int)
+      check_mode: false
+
+    - name: Set active stage to maintenance_drain
+      ansible.builtin.set_fact:
+        current_patch_stage: "maintenance_drain"
+
+    - name: Enable nginx maintenance mode flag file before patching
+      ansible.builtin.copy:
+        dest: /var/www/fleet-health/maintenance.enable
+        owner: www-data
+        group: www-data
+        mode: "0644"
+        content: "maintenance enabled at {{ ansible_facts['date_time']['iso8601'] }}
+"
+      when: patch_enable_maintenance_mode | bool
+
+    - name: Verify nginx returns HTTP 503 maintenance status when drained
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:{{ nginx_listen_port }}{{ health_endpoint_path }}"
+        method: GET
+        status_code: 503
+      when:
+        - patch_enable_maintenance_mode | bool
+        - not (ansible_check_mode | bool)
+      check_mode: false
+
+    - name: Wait for connection drain grace period
+      ansible.builtin.pause:
+        seconds: "{{ patch_drain_Wait_seconds | int }}"
+      when:
+        - patch_enable_maintenance_mode | bool
+        - (patch_drain_Wait_seconds | int) > 0
+        - not (ansible_check_mode | bool)
+
+    - name: Set active stage to fault_injection_check
+      ansible.builtin.set_fact:
+        current_patch_stage: "fault_injection_check"
+
+    - name: Trigger intentional failure if patch_simulate_failure_host matches host
+      ansible.builtin.fail:
+        msg: "Simulated patching fault injected on {{ inventory_hostname }} via patch_simulate_failure_host."
+      when: patch_simulate_failure_host == inventory_hostname
+
+    - name: Set active stage to apt_upgrade
+      ansible.builtin.set_fact:
+        current_patch_stage: "apt_upgrade"
+
+    - name: Execute apt package upgrade
+      ansible.builtin.apt:
+        upgrade: "{{ patch_upgrade_type }}"
+        update_cache: "{{ patch_update_cache | bool }}"
+        cache_valid_time: "{{ patch_cache_valid_time }}"
+        autoremove: "{{ patch_autoremove | bool }}"
+        autoclean: "{{ patch_autoclean | bool }}"
+        force_apt_get: true
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      register: apt_upgrade_result
+      notify: Reload nginx after patching
+
+    - name: Set active stage to reboot_evaluation
+      ansible.builtin.set_fact:
+        current_patch_stage: "reboot_evaluation"
+
+    - name: Check if /var/run/reboot-required exists after package operations
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: post_patch_reboot_stat
+      check_mode: false
+
+    - name: Determine whether reboot is required
+      ansible.builtin.set_fact:
+        host_needs_reboot: >-
+          {{
+            (post_patch_reboot_stat.stat.exists | bool) or
+            (patch_force_reboot_simulation | bool)
+          }}
+
+    - name: Set active stage to reboot_execution
+      ansible.builtin.set_fact:
+        current_patch_stage: "reboot_execution"
+
+    - name: Reboot host when required and allowed
+      ansible.builtin.reboot:
+        msg: "Ansible fleet patching reboot triggered"
+        connect_timeout: 10
+        reboot_timeout: "{{ patch_reboot_timeout }}"
+        post_reboot_delay: "{{ patch_post_reboot_delay }}"
+        test_command: uptime
+      register: reboot_result
+      when:
+        - host_needs_reboot | bool
+        - patch_allow_reboot | bool
+        - not (ansible_check_mode | bool)
+
+    - name: Set active stage to service_restore
+      ansible.builtin.set_fact:
+        current_patch_stage: "service_restore"
+
+    - name: Remove nginx maintenance mode flag file to restore traffic
+      ansible.builtin.file:
+        path: /var/www/fleet-health/maintenance.enable
+        state: absent
+      when: patch_enable_maintenance_mode | bool
+
+    - name: Ensure nginx service is started and enabled after patching/reboot
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true
+
+    - name: Flush handlers before post-patch health check
+      ansible.builtin.meta: flush_handlers
+
+    - name: Set active stage to post_patch_health_verification
+      ansible.builtin.set_fact:
+        current_patch_stage: "post_patch_health_verification"
+
+    - name: Verify HTTP JSON health endpoint responds with HTTP 200 and healthy status
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:{{ nginx_listen_port }}{{ health_endpoint_path }}"
+        method: GET
+        return_content: true
+        status_code: "{{ health_expected_status }}"
+      register: post_patch_health
+      retries: "{{ health_check_retries }}"
+      delay: "{{ health_check_delay }}"
+      until: post_patch_health.status == (health_expected_status | int)
+      check_mode: false
+
+    - name: Assert returned JSON health status is healthy
+      ansible.builtin.assert:
+        that:
+          - post_patch_health.json is defined
+          - post_patch_health.json.status == 'healthy'
+          - post_patch_health.json.host == inventory_hostname
+        fail_msg: "Post-patch health endpoint returned unexpected body: {{ post_patch_health.content | default('empty') }}"
+
+    - name: Record successful patching result in host_operation_record
+      ansible.builtin.set_fact:
+        host_operation_record: >-
+          {{
+            host_operation_record | combine({
+              'overall_status': 'success',
+              'pending_updates_count': (pre_patch_inst_lines | length),
+              'pending_security_updates_count': (pre_patch_sec_lines | length),
+              'upgradable_packages_sample': (pre_patch_inst_lines | map('regex_replace', '^Inst\s+([^\s]+).*$', '\1') | list)[:15],
+              'reboot_required': (host_needs_reboot | bool),
+              'patch_applied': (apt_upgrade_result is changed),
+              'reboot_performed': (reboot_result is defined and (reboot_result is changed)),
+              'maintenance_mode_used': (patch_enable_maintenance_mode | bool),
+              'health_check_passed': true,
+              'health_check_status_code': (post_patch_health.status | default(200)),
+              'health_check_payload': (post_patch_health.json | default({}))
+            })
+          }}
+
+  rescue:
+    - name: Best-effort removal of maintenance flag during rescue
+      ansible.builtin.file:
+        path: /var/www/fleet-health/maintenance.enable
+        state: absent
+      failed_when: false
+
+    - name: Record patching failure details in host_operation_record
+      ansible.builtin.set_fact:
+        host_operation_record: >-
+          {{
+            host_operation_record | combine({
+              'overall_status': 'failed',
+              'failure_stage': (current_patch_stage | default('unknown_patch_stage')),
+              'failure_reason': (ansible_failed_result.msg | default('Unhandled error during patching workflow')),
+              'maintenance_mode_used': (patch_enable_maintenance_mode | bool),
+              'health_check_passed': false
+            })
+          }}
+
+    - name: Immediately abort batch when patch_abort_on_batch_failure is enabled
+      ansible.builtin.fail:
+        msg: >-
+          Aborting batch immediately because patch_abort_on_batch_failure=true.
+          Host {{ inventory_hostname }} failed at stage {{ host_operation_record.failure_stage }}:
+          {{ host_operation_record.failure_reason }}
+      when: patch_abort_on_batch_failure | bool

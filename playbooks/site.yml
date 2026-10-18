@@ -1,0 +1,16 @@
+---
+- name: Bootstrap fleet baseline configuration and health endpoints
+  hosts: app_servers
+  become: true
+  gather_facts: true
+  vars:
+    report_workflow_type: "bootstrap"
+  tasks:
+    - name: Run common baseline role
+      ansible.builtin.include_role:
+        name: common
+      vars:
+        common_mode: "enforce"
+
+- name: Verify fleet health after bootstrap
+  ansible.builtin.import_playbook: verify.yml

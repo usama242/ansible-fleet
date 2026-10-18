@@ -1,0 +1,34 @@
+---
+name: Lint and Validate
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python linting dependencies
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+
+      - name: Run repository structure and Python validation
+        run: python3 ./scripts/validate-python.py
+
+      - name: Run yamllint
+        run: .venv/bin/yamllint -c .yamllint.yml playbooks roles inventory group_vars .github
+
+      - name: Run ansible-lint
+        run: .venv/bin/ansible-lint playbooks/site.yml playbooks/audit.yml playbooks/patch.yml playbooks/verify.yml

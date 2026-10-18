@@ -1,0 +1,24 @@
+---
+- name: Execute read-only fleet compliance and patch status audit
+  hosts: app_servers
+  become: true
+  gather_facts: true
+  vars:
+    report_workflow_type: "audit"
+  tasks:
+    - name: Run common role in read-only audit mode
+      ansible.builtin.include_role:
+        name: common
+      vars:
+        common_mode: "audit"
+
+- name: Aggregate and write read-only audit reports on localhost
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    report_workflow_type: "audit"
+  tasks:
+    - name: Generate timestamped JSON and Markdown audit reports
+      ansible.builtin.include_role:
+        name: reporting

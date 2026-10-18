@@ -1,0 +1,172 @@
+================================================================================
+OPERATIONS RUNBOOK: LOCAL LINUX FLEET PATCHING AND COMPLIANCE LAB
+================================================================================
+
+1. OVERVIEW AND ARCHITECTURE
+----------------------------
+This lab runs Ansible directly from a Python virtual environment on your
+workstation (no controller VM is needed) against three Ubuntu 24.04 LTS target
+nodes in the inventory group "app_servers":
+
+  - app01 : 192.168.56.11 (1 vCPU, 1024 MB RAM, nginx port 80 on private IP)
+  - app02 : 192.168.56.12 (1 vCPU, 1024 MB RAM, nginx port 80 on private IP)
+  - app03 : 192.168.56.13 (1 vCPU, 1024 MB RAM, nginx port 80 on private IP)
+
+Each node runs nginx serving a JSON health endpoint at:
+  http://<private_ip>:80/healthz
+
+Only Debian/Ubuntu systems using apt are supported. Any non-Debian host fails
+immediately with an explicit OS family assertion error.
+
+2. PROVIDER AND CPU ARCHITECTURE LIMITATIONS (IMPORTANT)
+--------------------------------------------------------
+The included Vagrantfile uses "bento/ubuntu-24.04" with VirtualBox or libvirt.
+VirtualBox does NOT work reliably on Apple Silicon (ARM64) Macs, and x86_64
+Vagrant boxes will not boot on ARM64 hypervisors without emulation.
+
+FALLBACK FOR APPLE SILICON OR EXISTING LINUX VMS:
+If your host cannot run Vagrant + VirtualBox/libvirt:
+  1. Provision 3 Ubuntu 24.04 LTS VMs using UTM, Multipass, VMware Fusion,
+     Parallels, Proxmox, or cloud instances.
+  2. Edit "inventory/hosts.yml" and update "ansible_host", "ansible_user", and
+     "ansible_ssh_private_key_file" for app01, app02, and app03.
+  3. Skip "make lab-up" and run "make bootstrap", "make audit", "make patch",
+     and "make verify" directly against your inventory.
+
+3. WORKFLOW DISTINCTIONS: AUDIT VS. CHECK MODE VS. LIVE PATCHING
+----------------------------------------------------------------
+This project implements three distinct operational modes:
+
+  A. Read-Only Audit ("make audit" -> playbooks/audit.yml)
+     - Strictly read-only. Never installs, upgrades, or removes packages.
+     - Collects package facts, systemd service facts, sshd effective settings,
+       sysctl values, "/var/run/reboot-required", and runs "apt-get -s -o
+       Debug::NoLocking=true upgrade" to inspect pending updates.
+     - Writes timestamped JSON and Markdown reports to "reports/".
+
+  B. Ansible Check Mode / Dry-Run ("make patch-check" -> playbooks/patch.yml --check)
+     - Runs the patching playbook with "--check".
+     - LIMITATIONS OF ANSIBLE CHECK MODE WITH APT/DPKG:
+       Check mode simulates task state changes, but it CANNOT predict every
+       real-world apt/dpkg effect or failure. Specifically, check mode cannot
+       predict maintainer post-install script failures, conffile prompts,
+       broken transitive dependencies, disk space exhaustion during unpacking,
+       kernel initramfs generation errors, or whether a package upgrade will
+       create "/var/run/reboot-required" at runtime.
+
+  C. Live Staged Patching ("make patch" or "make patch-yes" -> playbooks/patch.yml)
+     - Modifies packages on target hosts in staged batches using Ansible
+       "serial" (default batch size: 1).
+     - Requires interactive confirmation (typing "PATCH") unless overridden
+       with "-e patch_auto_approve=true" ("make patch-yes").
+     - Optionally places each host's nginx endpoint into HTTP 503 maintenance
+       mode before upgrading packages, reboots the host if
+       "/var/run/reboot-required" is present, waits for SSH reconnection,
+       restores nginx, and verifies HTTP 200 health before advancing to the
+       next batch.
+     - NOTE ON AVAILABILITY: While staged serial execution and HTTP 503 drain
+       flags help upstream load balancers shift traffic, individual nodes
+       experience service restarts and reboots. This project does NOT claim
+       zero downtime.
+
+4. STEP-BY-STEP COMMAND WORKFLOW
+--------------------------------
+  1. Create virtualenv and install tools:
+       make venv
+  2. Run workstation preflight checks:
+       make preflight
+  3. Start Vagrant VMs (or configure inventory/hosts.yml for existing VMs):
+       make lab-up
+  4. Bootstrap baseline compliance and nginx health endpoints:
+       make bootstrap
+  5. Run read-only compliance and patch audit:
+       make audit
+  6. Preview patching in Ansible check mode:
+       make patch-check
+  7. Execute live staged patching (interactive confirmation):
+       make patch
+     Or non-interactive opt-in:
+       make patch-yes
+  8. Run standalone service and HTTP verification:
+       make verify
+  9. Run linters and validation:
+       make lint
+  10. Destroy lab VMs when finished:
+       make lab-destroy
+
+5. CONFIGURABLE VARIABLES (group_vars/all.yml)
+----------------------------------------------
+  - lab_environment_name              : Environment label included in health JSON.
+  - supported_os_family               : Expected OS family ("Debian").
+  - supported_distributions           : Allowed distributions (["Ubuntu", "Debian"]).
+  - nginx_listen_port                 : Port for nginx health server (80).
+  - nginx_bind_private_ip_only        : Bind nginx only to the host's private lab IP (true).
+  - health_endpoint_path              : URI path for health check ("/healthz").
+  - health_expected_status            : Expected HTTP status code (200).
+  - health_check_retries              : Retries for HTTP health polling (6).
+  - health_check_delay                : Delay in seconds between retries (3).
+  - compliance_required_packages      : Packages required for baseline compliance.
+  - compliance_required_services      : Services required to be running.
+  - compliance_sshd_permit_root_login : Expected PermitRootLogin value ("no").
+  - compliance_sshd_password_authentication : Expected PasswordAuthentication ("no").
+  - compliance_sysctl_expectations    : Dict of sysctl keys and expected values.
+  - patch_upgrade_type                : apt upgrade mode ("safe", "dist", "full", "yes").
+  - patch_update_cache                : Update apt cache before patching (true).
+  - patch_cache_valid_time            : Cache validity in seconds (3600).
+  - patch_autoremove                  : Remove unused dependency packages (false).
+  - patch_autoclean                   : Clean old downloaded archive files (true).
+  - patch_auto_approve                : Skip interactive confirmation when true (false).
+  - patch_serial_batch                : Number of hosts patched per batch (1).
+  - patch_batch_pause_seconds         : Pause seconds between batches (5).
+  - patch_enable_maintenance_mode     : Return HTTP 503 during host patching (true).
+  - patch_drain_Wait_seconds          : Drain wait after enabling HTTP 503 (2).
+  - patch_allow_reboot                : Reboot host if /var/run/reboot-required exists (true).
+  - patch_reboot_timeout              : Max seconds to wait for reboot (300).
+  - patch_post_reboot_delay           : Delay after reboot before testing SSH (5).
+  - patch_force_reboot_simulation     : Force a reboot for testing even if not required (false).
+  - patch_abort_on_batch_failure      : Stop immediately on first batch failure (false).
+  - patch_simulate_failure_host       : Hostname on which to inject a test failure ("").
+  - reports_output_dir                : Directory where runtime reports are written.
+
+6. FAILURE SIMULATION AND REPORTING AFTER PARTIAL FAILURES
+----------------------------------------------------------
+To test failure capture and reporting when one host fails mid-patching:
+  .venv/bin/ansible-playbook -i inventory/hosts.yml playbooks/patch.yml \
+    -e "patch_auto_approve=true" \
+    -e "patch_simulate_failure_host=app02"
+
+How it works:
+  - Each host runs its patching tasks inside an Ansible "block/rescue" structure.
+  - If a task fails on app02, the rescue block cleans up the maintenance flag
+    and records the exact "failure_stage" and "failure_reason" inside
+    "host_operation_record".
+  - When "patch_abort_on_batch_failure" is false (default), remaining hosts
+    proceed, the final localhost reporting play aggregates all hostvars into
+    timestamped JSON and Markdown reports under "reports/", and the playbook
+    exits non-zero at the final assertion task so CI/operators see the failure.
+
+7. RECOVERY AND ROLLBACK GUIDANCE
+---------------------------------
+WHY APT DOWNGRADES ARE NOT A DEPENDABLE ROLLBACK STRATEGY:
+Automatic "apt-get install <pkg>=<old_version>" downgrades are not supported or
+reliable in Debian/Ubuntu operations. Old package versions frequently disappear
+from upstream apt mirrors once superseded, post-install/pre-remove scripts are
+rarely tested for reverse migrations, and database/configuration schemas changed
+during an upgrade cannot be safely reverted by downgrading binaries.
+
+RECOMMENDED RECOVERY STRATEGIES AND THEIR LIMITATIONS:
+  A. Provider Snapshots (Before Patching Stateful VMs)
+     - Take a VM snapshot prior to executing "make patch":
+         vagrant snapshot save app01 pre-patch
+     - Restore on failure:
+         vagrant snapshot restore app01 pre-patch
+     - Limitations: Restoring a snapshot reverts disk state (including any data
+       written since the snapshot) and causes node downtime during restoration.
+
+  B. Disposable VM Rebuild (Immutable / Cattle Pattern)
+     - For stateless application nodes, destroy and re-create the failed VM:
+         vagrant destroy -f app02 && vagrant up app02
+         make bootstrap
+     - Limitations: Any local unbacked state or logs on the destroyed instance
+       are permanently lost, and rebuilding requires time to provision and
+       re-bootstrap.

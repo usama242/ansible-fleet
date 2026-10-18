@@ -1,0 +1,68 @@
+---
+- name: Verify nginx service state and HTTP JSON health endpoints
+  hosts: app_servers
+  become: true
+  gather_facts: true
+  vars:
+    report_workflow_type: "verify"
+  tasks:
+    - name: Initialize verification record
+      ansible.builtin.set_fact:
+        verify_failure_stage: "none"
+        verify_failure_reason: ""
+        verify_passed: false
+
+    - name: Perform service and HTTP health verification block
+      block:
+        - name: Assert OS family is Debian/Ubuntu
+          ansible.builtin.assert:
+            that:
+              - ansible_facts['os_family'] == supported_os_family
+              - ansible_facts['distribution'] in supported_distributions
+            fail_msg: "Unsupported OS: {{ ansible_facts['distribution'] }} ({{ ansible_facts['os_family'] }})."
+
+        - name: Gather service facts
+          ansible.builtin.service_facts:
+
+        - name: Assert nginx systemd service is running and enabled
+          ansible.builtin.assert:
+            that:
+              - "'nginx.service' in ansible_facts.services"
+              - ansible_facts.services['nginx.service'].state == 'running'
+              - ansible_facts.services['nginx.service'].status == 'enabled'
+            fail_msg: "nginx.service is not running and enabled."
+
+        - name: Query local HTTP JSON health endpoint
+          ansible.builtin.uri:
+            url: "http://{{ ansible_host }}:{{ nginx_listen_port }}{{ health_endpoint_path }}"
+            method: GET
+            return_content: true
+            status_code: "{{ health_expected_status }}"
+          register: verify_health_response
+          retries: "{{ health_check_retries }}"
+          delay: "{{ health_check_delay }}"
+          until: verify_health_response.status == (health_expected_status | int)
+          check_mode: false
+
+        - name: Assert JSON payload reports healthy status for host
+          ansible.builtin.assert:
+            that:
+              - verify_health_response.json is defined
+              - verify_health_response.json.status == 'healthy'
+              - verify_health_response.json.host == inventory_hostname
+            fail_msg: "Unexpected JSON health payload: {{ verify_health_response.content | default('empty') }}"
+
+        - name: Mark verification passed
+          ansible.builtin.set_fact:
+            verify_passed: true
+
+      rescue:
+        - name: Record verification failure details
+          ansible.builtin.set_fact:
+            verify_passed: false
+            verify_failure_stage: "verify_health"
+            verify_failure_reason: "{{ ansible_failed_result.msg | default('Health check failed') }}"
+
+        - name: Fail host verification
+          ansible.builtin.fail:
+            msg: "Verification failed on {{ inventory_hostname }} at stage {{ verify_failure_stage }}: {{ verify_failure_reason }}"

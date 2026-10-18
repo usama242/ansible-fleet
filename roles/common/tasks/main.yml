@@ -1,0 +1,352 @@
+---
+- name: Initialize host operation record for audit or bootstrap
+  ansible.builtin.set_fact:
+    host_operation_record:
+      hostname: "{{ inventory_hostname }}"
+      ip_address: "{{ ansible_host }}"
+      os_family: "{{ ansible_facts['os_family'] | default('unknown') }}"
+      distribution: "{{ ansible_facts['distribution'] | default('unknown') }}"
+      distribution_version: "{{ ansible_facts['distribution_version'] | default('unknown') }}"
+      kernel: "{{ ansible_facts['kernel'] | default('unknown') }}"
+      workflow_mode: "{{ common_mode | default('audit') }}"
+      check_mode: "{{ ansible_check_mode | bool }}"
+      timestamp_utc: "{{ ansible_facts['date_time']['iso8601'] | default('unknown') }}"
+      overall_status: "pending"
+      failure_stage: "none"
+      failure_reason: ""
+      pending_updates_count: 0
+      pending_security_updates_count: 0
+      upgradable_packages_sample: []
+      reboot_required: false
+      patch_applied: false
+      reboot_performed: false
+      maintenance_mode_used: false
+      compliance_passed: false
+      compliance_checks: {}
+      health_check_passed: false
+      health_check_status_code: 0
+      health_check_payload: {}
+
+- name: Execute common role workflow with structured error capture
+  block:
+    - name: Set active failure stage to os_validation
+      ansible.builtin.set_fact:
+        current_stage: "os_validation"
+
+    - name: Assert target runs supported Debian/Ubuntu OS family
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['os_family'] == supported_os_family
+          - ansible_facts['distribution'] in supported_distributions
+        fail_msg: >-
+          Unsupported operating system {{ ansible_facts['distribution'] }}
+          (os_family={{ ansible_facts['os_family'] }}). This project supports Debian/Ubuntu apt only.
+
+    - name: Enforce baseline configuration when common_mode is enforce
+      when: (common_mode | default('audit')) == 'enforce'
+      block:
+        - name: Set active failure stage to package_baseline
+          ansible.builtin.set_fact:
+            current_stage: "package_baseline"
+
+        - name: Ensure required baseline packages are installed
+          ansible.builtin.apt:
+            name: "{{ compliance_required_packages }}"
+            state: present
+            update_cache: true
+            cache_valid_time: "{{ patch_cache_valid_time }}"
+
+        - name: Set active failure stage to security_baseline
+          ansible.builtin.set_fact:
+            current_stage: "security_baseline"
+
+        - name: Configure hardened SSH drop-in configuration
+          ansible.builtin.copy:
+            dest: /etc/ssh/sshd_config.d/99-fleet-compliance.conf
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              # Managed by Ansible local-linux-fleet-lab
+              PermitRootLogin {{ compliance_sshd_permit_root_login }}
+              PasswordAuthentication {{ compliance_sshd_password_authentication }}
+          register: sshd_dropin_result
+
+        - name: Reload ssh service when drop-in changes
+          ansible.builtin.service:
+            name: ssh
+            state: reloaded
+          when: sshd_dropin_result is changed
+
+        - name: Configure baseline kernel sysctl parameters
+          ansible.builtin.copy:
+            dest: /etc/sysctl.d/99-fleet-compliance.conf
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              # Managed by Ansible local-linux-fleet-lab
+              net.ipv4.ip_forward = {{ compliance_sysctl_expectations['net.ipv4.ip_forward'] }}
+              kernel.kptr_restrict = {{ compliance_sysctl_expectations['kernel.kptr_restrict'] }}
+          register: sysctl_dropin_result
+
+        - name: Apply sysctl settings when changed
+          ansible.builtin.command:
+            cmd: sysctl --system
+          changed_when: true
+          when: sysctl_dropin_result is changed
+
+        - name: Set active failure stage to nginx_configuration
+          ansible.builtin.set_fact:
+            current_stage: "nginx_configuration"
+
+        - name: Ensure web root directory exists
+          ansible.builtin.file:
+            path: /var/www/fleet-health
+            state: directory
+            owner: www-data
+            group: www-data
+            mode: "0755"
+
+        - name: Write static JSON health payload file
+          ansible.builtin.copy:
+            dest: /var/www/fleet-health/healthz.json
+            owner: www-data
+            group: www-data
+            mode: "0644"
+            content: |
+              {"status":"healthy","host":"{{ inventory_hostname }}","ip":"{{ ansible_host }}","environment":"{{ lab_environment_name }}"}
+
+        - name: Write maintenance JSON payload file
+          ansible.builtin.copy:
+            dest: /var/www/fleet-health/maintenance.json
+            owner: www-data
+            group: www-data
+            mode: "0644"
+            content: |
+              {"status":"maintenance","host":"{{ inventory_hostname }}","ip":"{{ ansible_host }}","environment":"{{ lab_environment_name }}"}
+
+        - name: Remove maintenance flag file if present during bootstrap
+          ansible.builtin.file:
+            path: /var/www/fleet-health/maintenance.enable
+            state: absent
+
+        - name: Configure nginx site serving JSON health endpoint on private lab IP
+          ansible.builtin.copy:
+            dest: /etc/nginx/sites-available/fleet-health.conf
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              server {
+                  listen {{ (ansible_host ~ ':' ~ (nginx_listen_port | string)) if (nginx_bind_private_ip_only | bool) else (nginx_listen_port | string) }} default_server;
+                  server_name {{ inventory_hostname }} {{ ansible_host }} _;
+                  root /var/www/fleet-health;
+                  default_type application/json;
+
+                  location = {{ health_endpoint_path }} {
+                      if (-f /var/www/fleet-health/maintenance.enable) {
+                          return 503 '{"status":"maintenance","host":"{{ inventory_hostname }}","ip":"{{ ansible_host }}"}';
+                      }
+                      try_files /healthz.json =404;
+                  }
+
+                  location / {
+                      return 200 '{"service":"fleet-node","host":"{{ inventory_hostname }}","status":"online"}';
+                  }
+              }
+          register: nginx_site_config
+
+        - name: Remove default nginx site symlink
+          ansible.builtin.file:
+            path: /etc/nginx/sites-enabled/default
+            state: absent
+          register: nginx_default_removed
+
+        - name: Enable fleet-health nginx site symlink
+          ansible.builtin.file:
+            src: /etc/nginx/sites-available/fleet-health.conf
+            dest: /etc/nginx/sites-enabled/fleet-health.conf
+            state: link
+          register: nginx_site_enabled
+
+        - name: Ensure nginx service is enabled and running
+          ansible.builtin.service:
+            name: nginx
+            state: started
+            enabled: true
+
+        - name: Reload nginx if site configuration changed
+          ansible.builtin.service:
+            name: nginx
+            state: reloaded
+          when: nginx_site_config is changed or nginx_default_removed is changed or nginx_site_enabled is changed
+
+    - name: Set active failure stage to read_only_audit
+      ansible.builtin.set_fact:
+        current_stage: "read_only_audit"
+
+    - name: Gather installed package facts without modifying packages
+      ansible.builtin.package_facts:
+        manager: apt
+      check_mode: false
+
+    - name: Gather systemd service state facts
+      ansible.builtin.service_facts:
+      check_mode: false
+
+    - name: Query simulated upgradable packages via apt-get -s (strictly read-only)
+      ansible.builtin.command:
+        cmd: apt-get -s -o Debug::NoLocking=true upgrade
+      register: apt_simulated_upgrade
+      changed_when: false
+      check_mode: false
+
+    - name: Parse upgradable package names from read-only simulation
+      ansible.builtin.set_fact:
+        audit_upgradable_lines: >-
+          {{
+            apt_simulated_upgrade.stdout_lines
+            | select('match', '^Inst ')
+            | list
+          }}
+        audit_security_lines: >-
+          {{
+            apt_simulated_upgrade.stdout_lines
+            | select('match', '^Inst .*security.*')
+            | list
+          }}
+
+    - name: Check whether /var/run/reboot-required exists
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required_stat
+      check_mode: false
+
+    - name: Read effective sshd configuration using sshd -T
+      ansible.builtin.command:
+        cmd: sshd -T
+      register: sshd_effective_config
+      changed_when: false
+      check_mode: false
+
+    - name: Read sysctl net.ipv4.ip_forward value
+      ansible.builtin.command:
+        cmd: sysctl -n net.ipv4.ip_forward
+      register: sysctl_ip_forward
+      changed_when: false
+      check_mode: false
+
+    - name: Read sysctl kernel.kptr_restrict value
+      ansible.builtin.command:
+        cmd: sysctl -n kernel.kptr_restrict
+      register: sysctl_kptr_restrict
+      changed_when: false
+      check_mode: false
+
+    - name: Set active failure stage to health_verification
+      ansible.builtin.set_fact:
+        current_stage: "health_verification"
+
+    - name: Check HTTP health endpoint over private lab network
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:{{ nginx_listen_port }}{{ health_endpoint_path }}"
+        method: GET
+        return_content: true
+        status_code: [200, 503]
+      register: audit_http_check
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: Evaluate compliance checks
+      ansible.builtin.set_fact:
+        evaluated_compliance_checks:
+          packages_installed: >-
+            {{
+              (compliance_required_packages | difference(ansible_facts.packages.keys() | list)) | length == 0
+            }}
+          missing_packages: >-
+            {{
+              compliance_required_packages | difference(ansible_facts.packages.keys() | list)
+            }}
+          nginx_service_active: >-
+            {{
+              ('nginx.service' in ansible_facts.services) and
+              (ansible_facts.services['nginx.service'].state == 'running')
+            }}
+          ssh_service_active: >-
+            {{
+              (('ssh.service' in ansible_facts.services) and (ansible_facts.services['ssh.service'].state == 'running')) or
+              (('sshd.service' in ansible_facts.services) and (ansible_facts.services['sshd.service'].state == 'running'))
+            }}
+          sshd_permit_root_login_compliant: >-
+            {{
+              ('permitrootlogin ' ~ (compliance_sshd_permit_root_login | lower)) in (sshd_effective_config.stdout_lines | map('lower') | list)
+            }}
+          sshd_password_auth_compliant: >-
+            {{
+              ('passwordauthentication ' ~ (compliance_sshd_password_authentication | lower)) in (sshd_effective_config.stdout_lines | map('lower') | list)
+            }}
+          sysctl_ip_forward_compliant: >-
+            {{
+              (sysctl_ip_forward.stdout | trim) == (compliance_sysctl_expectations['net.ipv4.ip_forward'] | string)
+            }}
+          sysctl_kptr_restrict_compliant: >-
+            {{
+              (sysctl_kptr_restrict.stdout | trim) == (compliance_sysctl_expectations['kernel.kptr_restrict'] | string)
+            }}
+
+    - name: Determine overall compliance boolean
+      ansible.builtin.set_fact:
+        is_host_compliant: >-
+          {{
+            evaluated_compliance_checks.packages_installed and
+            evaluated_compliance_checks.nginx_service_active and
+            evaluated_compliance_checks.ssh_service_active and
+            evaluated_compliance_checks.sshd_permit_root_login_compliant and
+            evaluated_compliance_checks.sshd_password_auth_compliant and
+            evaluated_compliance_checks.sysctl_ip_forward_compliant and
+            evaluated_compliance_checks.sysctl_kptr_restrict_compliant
+          }}
+        is_health_ok: >-
+          {{
+            (audit_http_check.status | default(0)) == (health_expected_status | int) and
+            (audit_http_check.json is defined) and
+            (audit_http_check.json.status | default('') == 'healthy')
+          }}
+
+    - name: Finalize host operation record on success
+      ansible.builtin.set_fact:
+        host_operation_record: >-
+          {{
+            host_operation_record | combine({
+              'overall_status': 'success' if (is_host_compliant and is_health_ok) else 'non_compliant',
+              'pending_updates_count': (audit_upgradable_lines | length),
+              'pending_security_updates_count': (audit_security_lines | length),
+              'upgradable_packages_sample': (audit_upgradable_lines | map('regex_replace', '^Inst\s+([^\s]+).*$', '\1') | list)[:15],
+              'reboot_required': (reboot_required_stat.stat.exists | bool),
+              'compliance_passed': (is_host_compliant | bool),
+              'compliance_checks': evaluated_compliance_checks,
+              'health_check_passed': (is_health_ok | bool),
+              'health_check_status_code': (audit_http_check.status | default(0)),
+              'health_check_payload': (audit_http_check.json | default({}))
+            })
+          }}
+
+  rescue:
+    - name: Record failure stage and error message in host_operation_record
+      ansible.builtin.set_fact:
+        host_operation_record: >-
+          {{
+            host_operation_record | combine({
+              'overall_status': 'failed',
+              'failure_stage': (current_stage | default('unknown_common_stage')),
+              'failure_reason': (ansible_failed_result.msg | default('Unhandled error in common role'))
+            })
+          }}
+
+    - name: Re-raise failure when running in enforce mode
+      ansible.builtin.fail:
+        msg: "Host {{ inventory_hostname }} failed in stage {{ current_stage }}: {{ host_operation_record.failure_reason }}"
+      when: (common_mode | default('audit')) == 'enforce'

@@ -1,0 +1,37 @@
+# Fleet Operations Report: {{ fleet_report_summary.workflow_type | upper }}
+
+- **Generated (UTC):** `{{ fleet_report_summary.generated_at_utc }}`
+- **Total Inventory Hosts:** `{{ fleet_report_summary.total_inventory_hosts }}`
+- **Reported Hosts:** `{{ fleet_report_summary.reported_hosts_count }}`
+- **Succeeded:** `{{ fleet_report_summary.succeeded_count }}`
+- **Non-Compliant:** `{{ fleet_report_summary.non_compliant_count }}`
+- **Failed:** `{{ fleet_report_summary.failed_count }}`
+{% if fleet_report_summary.unreachable_or_missing_hosts | length > 0 %}
+- **Unreachable / Missing Hosts:** `{{ fleet_report_summary.unreachable_or_missing_hosts | join(', ') }}`
+{% endif %}
+
+## Per-Host Summary
+
+| Host | IP | OS | Mode | Check Mode | Status | Pending Updates (Sec) | Patch Applied | Reboot Req / Done | Health HTTP | Failure Stage |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+{% for host in collected_host_records %}
+| `{{ host.hostname }}` | `{{ host.ip_address }}` | {{ host.distribution }} {{ host.distribution_version }} | `{{ host.workflow_mode }}` | `{{ host.check_mode }}` | **{{ host.overall_status | upper }}** | {{ host.pending_updates_count }} ({{ host.pending_security_updates_count }}) | `{{ host.patch_applied }}` | `{{ host.reboot_required }}` / `{{ host.reboot_performed }}` | `{{ host.health_check_status_code }}` (`{{ host.health_check_passed }}`) | `{{ host.failure_stage }}` |
+{% endfor %}
+
+## Detailed Host Diagnostics
+
+{% for host in collected_host_records %}
+### {{ host.hostname }} (`{{ host.ip_address }}`)
+
+- **Kernel:** `{{ host.kernel }}`
+- **Timestamp (UTC):** `{{ host.timestamp_utc }}`
+- **Overall Status:** `{{ host.overall_status }}`
+- **Compliance Passed:** `{{ host.compliance_passed }}`
+- **Maintenance Mode Used:** `{{ host.maintenance_mode_used }}`
+- **Upgradable Packages Sample (up to 15):** `{{ host.upgradable_packages_sample | join(', ') if (host.upgradable_packages_sample | length > 0) else 'None' }}`
+{% if host.failure_stage != 'none' or host.failure_reason != '' %}
+- **Failure Stage:** `{{ host.failure_stage }}`
+- **Failure Reason:** {{ host.failure_reason }}
+{% endif %}
+
+{% endfor %}

@@ -1,0 +1,65 @@
+---
+# Lab environment metadata
+lab_environment_name: "local-linux-fleet-lab"
+supported_os_family: "Debian"
+supported_distributions:
+  - "Ubuntu"
+  - "Debian"
+
+# Web and health endpoint settings (bound to private lab IP by default)
+nginx_listen_port: 80
+nginx_bind_private_ip_only: true
+health_endpoint_path: "/healthz"
+health_expected_status: 200
+health_check_retries: 6
+health_check_delay: 3
+
+# Compliance baseline expectations
+compliance_required_packages:
+  - nginx
+  - unattended-upgrades
+  - ca-certificates
+  - curl
+  - python3-apt
+compliance_required_services:
+  - nginx
+  - ssh
+compliance_sshd_permit_root_login: "no"
+compliance_sshd_password_authentication: "no"
+compliance_sysctl_expectations:
+  net.ipv4.ip_forward: "0"
+  kernel.kptr_restrict: "1"
+
+# Patching workflow controls
+# patch_upgrade_type options: dist, full, safe, yes
+patch_upgrade_type: "safe"
+patch_update_cache: true
+patch_cache_valid_time: 3600
+patch_autoremove: false
+patch_autoclean: true
+
+# Confirmation and execution safety
+patch_auto_approve: false
+patch_serial_batch: 1
+patch_batch_pause_seconds: 5
+
+# Optional maintenance / drain behavior during patching
+patch_enable_maintenance_mode: true
+patch_drain_Wait_seconds: 2
+
+# Reboot handling
+patch_allow_reboot: true
+patch_reboot_timeout: 300
+patch_post_reboot_delay: 5
+patch_force_reboot_simulation: false
+
+# Failure handling behavior
+# If patch_abort_on_batch_failure is true, any unhandled failure stops the batch/play.
+# Host-level errors are captured in host_operation_record first so the reporting
+# aggregation play can still emit a complete report.
+patch_abort_on_batch_failure: false
+patch_simulate_failure_host: ""
+
+# Runtime reporting settings
+reports_output_dir: "{{ playbook_dir }}/../reports"
+report_workflow_type: "unspecified"

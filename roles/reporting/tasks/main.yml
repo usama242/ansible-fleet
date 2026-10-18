@@ -1,0 +1,58 @@
+---
+- name: Ensure local reports output directory exists
+  ansible.builtin.file:
+    path: "{{ reports_output_dir }}"
+    state: directory
+    mode: "0755"
+  check_mode: false
+
+- name: Build report timestamp and collected host records
+  ansible.builtin.set_fact:
+    report_timestamp_id: "{{ ansible_facts['date_time']['iso8601_basic_short'] }}"
+    report_generated_iso8601: "{{ ansible_facts['date_time']['iso8601'] }}"
+    collected_host_records: >-
+      {{
+        groups['app_servers']
+        | map('extract', hostvars, 'host_operation_record')
+        | select('defined')
+        | list
+      }}
+  check_mode: false
+
+- name: Compute fleet summary counts for report templates
+  ansible.builtin.set_fact:
+    fleet_report_summary:
+      workflow_type: "{{ report_workflow_type }}"
+      generated_at_utc: "{{ report_generated_iso8601 }}"
+      total_inventory_hosts: "{{ groups['app_servers'] | length }}"
+      reported_hosts_count: "{{ collected_host_records | length }}"
+      succeeded_count: "{{ collected_host_records | selectattr('overall_status', 'equalto', 'success') | list | length }}"
+      non_compliant_count: "{{ collected_host_records | selectattr('overall_status', 'equalto', 'non_compliant') | list | length }}"
+      failed_count: "{{ collected_host_records | selectattr('overall_status', 'equalto', 'failed') | list | length }}"
+      unreachable_or_missing_hosts: >-
+        {{
+          groups['app_servers']
+          | difference(collected_host_records | map(attribute='hostname') | list)
+        }}
+  check_mode: false
+
+- name: Write timestamped JSON fleet report
+  ansible.builtin.template:
+    src: report.json.j2
+    dest: "{{ reports_output_dir }}/{{ report_workflow_type }}-{{ report_timestamp_id }}.json"
+    mode: "0644"
+  check_mode: false
+
+- name: Write timestamped Markdown fleet report
+  ansible.builtin.template:
+    src: report.md.j2
+    dest: "{{ reports_output_dir }}/{{ report_workflow_type }}-{{ report_timestamp_id }}.md"
+    mode: "0644"
+  check_mode: false
+
+- name: Display generated report file paths
+  ansible.builtin.debug:
+    msg:
+      - "JSON Report: {{ reports_output_dir }}/{{ report_workflow_type }}-{{ report_timestamp_id }}.json"
+      - "Markdown Report: {{ reports_output_dir }}/{{ report_workflow_type }}-{{ report_timestamp_id }}.md"
+  check_mode: false

@@ -1,0 +1,67 @@
+---
+- name: Interactive confirmation gate before fleet patching
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  tasks:
+    - name: Determine whether running in check mode
+      ansible.builtin.set_fact:
+        is_check_mode_run: "{{ ansible_check_mode | bool }}"
+
+    - name: Prompt operator for interactive approval when not auto-approved or in check mode
+      ansible.builtin.pause:
+        prompt: >-
+          WARNING: You are about to execute live package patching across group 'app_servers'
+          (serial={{ patch_serial_batch }}, reboot_allowed={{ patch_allow_reboot }}).
+          Type 'PATCH' to proceed or press Ctrl+C then 'A' to abort
+      register: operator_confirmation
+      when:
+        - not (patch_auto_approve | bool)
+        - not (ansible_check_mode | bool)
+
+    - name: Validate interactive operator confirmation token
+      ansible.builtin.assert:
+        that:
+          - operator_confirmation.user_input == 'PATCH'
+        fail_msg: "Live patching aborted: confirmation token did not match 'PATCH'."
+      when:
+        - not (patch_auto_approve | bool)
+        - not (ansible_check_mode | bool)
+
+- name: Execute staged fleet patching and service verification
+  hosts: app_servers
+  become: true
+  gather_facts: true
+  serial: "{{ patch_serial_batch }}"
+  vars:
+    report_workflow_type: "{{ 'patch-check' if ansible_check_mode else 'patch' }}"
+  tasks:
+    - name: Execute patching role on current batch
+      ansible.builtin.include_role:
+        name: patching
+
+    - name: Pause between staged serial batches when configured
+      ansible.builtin.pause:
+        seconds: "{{ patch_batch_pause_seconds | int }}"
+      when:
+        - (patch_batch_pause_seconds | int) > 0
+        - not (ansible_check_mode | bool)
+        - inventory_hostname == ansible_play_batch[-1]
+        - inventory_hostname != groups['app_servers'][-1]
+
+- name: Aggregate and write fleet patching reports on localhost
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    report_workflow_type: "{{ 'patch-check' if ansible_check_mode else 'patch' }}"
+  tasks:
+    - name: Generate timestamped JSON and Markdown patch reports
+      ansible.builtin.include_role:
+        name: reporting
+
+    - name: Fail playbook at completion if any host recorded a patch or verification failure
+      ansible.builtin.fail:
+        msg: "One or more hosts failed during patching or verification. Inspect the generated report in reports/."
+      when:
+        - groups['app_servers'] | map('extract', hostvars, 'host_operation_record') | select('defined') | selectattr('overall_status', 'equalto', 'failed') | list | length > 0
