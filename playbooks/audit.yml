@@ -18,6 +18,7 @@
   gather_facts: true
   vars:
     report_workflow_type: "audit"
+    reports_output_dir: "{{ hostvars[groups['app_servers'][0]].reports_output_dir | default(playbook_dir ~ '/../reports') }}"
   tasks:
     - name: Generate timestamped JSON and Markdown audit reports
       ansible.builtin.include_role:

@@ -2,12 +2,13 @@
 # vi: set ft=ruby :
 
 # NOTE ON HOST ARCHITECTURE AND PROVIDERS:
-# This Vagrantfile targets x86_64 VirtualBox or libvirt by default using the
-# bento/ubuntu-24.04 box. VirtualBox does NOT work reliably on Apple Silicon
-# (ARM64) hosts, and standard x86_64 boxes cannot run under ARM64 hypervisors.
-# If you are on Apple Silicon or prefer another hypervisor (multipass, UTM,
-# VMware Fusion, Proxmox, or cloud VMs), provision 3 Ubuntu 24.04 LTS nodes
-# manually or via your hypervisor and update inventory/hosts.yml.
+# This Vagrantfile uses the Bento Ubuntu 24.04 box. On Apple Silicon, Vagrant
+# selects its ARM64 VirtualBox variant. Recent Bento ARM64 boxes use OVF
+# features requiring VirtualBox 7.2 or newer; older versions may fail while
+# importing box.ovf. Standard x86_64 boxes cannot run on ARM64 without emulation.
+# If VirtualBox 7.2+ is unavailable or incompatible, use another compatible
+# hypervisor (UTM, VMware Fusion, Parallels, Proxmox, or cloud VMs), provision
+# 3 Ubuntu 24.04 LTS nodes, and update inventory/hosts.yml.
 # See docs/operations-runbook.txt for fallback instructions.
 
 Vagrant.configure("2") do |config|

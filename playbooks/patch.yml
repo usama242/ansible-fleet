@@ -3,6 +3,10 @@
   hosts: localhost
   connection: local
   gather_facts: true
+  vars:
+    patch_auto_approve: "{{ hostvars[groups['app_servers'][0]].patch_auto_approve | default(false) }}"
+    patch_serial_batch: "{{ hostvars[groups['app_servers'][0]].patch_serial_batch | default(1) }}"
+    patch_allow_reboot: "{{ hostvars[groups['app_servers'][0]].patch_allow_reboot | default(true) }}"
   tasks:
     - name: Determine whether running in check mode
       ansible.builtin.set_fact:
@@ -32,7 +36,7 @@
   hosts: app_servers
   become: true
   gather_facts: true
-  serial: "{{ patch_serial_batch }}"
+  serial: "{{ hostvars[groups['app_servers'][0]].patch_serial_batch | default(1) }}"
   vars:
     report_workflow_type: "{{ 'patch-check' if ansible_check_mode else 'patch' }}"
   tasks:
@@ -55,6 +59,7 @@
   gather_facts: true
   vars:
     report_workflow_type: "{{ 'patch-check' if ansible_check_mode else 'patch' }}"
+    reports_output_dir: "{{ hostvars[groups['app_servers'][0]].reports_output_dir | default(playbook_dir ~ '/../reports') }}"
   tasks:
     - name: Generate timestamped JSON and Markdown patch reports
       ansible.builtin.include_role:

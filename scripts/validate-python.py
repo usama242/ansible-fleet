@@ -20,7 +20,7 @@ REQUIRED_FILES = [
     "ansible.cfg",
     "requirements.txt",
     "inventory/hosts.yml",
-    "group_vars/all.yml",
+    "inventory/group_vars/all.yml",
     "playbooks/site.yml",
     "playbooks/audit.yml",
     "playbooks/patch.yml",

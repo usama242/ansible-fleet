@@ -59,7 +59,7 @@ verify:
 
 lint:
 	python3 ./scripts/validate-python.py
-	$(YAMLLINT) -c .yamllint.yml playbooks roles inventory group_vars .github
+	$(YAMLLINT) -c .yamllint.yml playbooks roles inventory .github
 	$(ANSIBLE_LINT) playbooks/site.yml playbooks/audit.yml playbooks/patch.yml playbooks/verify.yml
 
 clean-reports:

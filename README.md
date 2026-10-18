@@ -15,7 +15,7 @@ Supported targets are Debian and Ubuntu systems using apt and systemd. Bootstrap
 
 - Python 3 and `make`
 - A Debian/Ubuntu target fleet reachable over SSH
-- For the included disposable lab: Vagrant and a compatible provider (VirtualBox or libvirt). Vagrant does not work reliably with the default x86_64 box on Apple Silicon; use compatible existing VMs there.
+- For the included disposable lab: Vagrant and a compatible provider. On Apple Silicon, the current Bento ARM64 box requires VirtualBox 7.2 or newer; older versions can fail importing its OVF appliance. Check with `VBoxManage --version`. If that version is unavailable or incompatible, use another compatible hypervisor or existing Ubuntu VMs.
 
 ## Install and prepare
 

@@ -20,12 +20,15 @@ immediately with an explicit OS family assertion error.
 
 2. PROVIDER AND CPU ARCHITECTURE LIMITATIONS (IMPORTANT)
 --------------------------------------------------------
-The included Vagrantfile uses "bento/ubuntu-24.04" with VirtualBox or libvirt.
-VirtualBox does NOT work reliably on Apple Silicon (ARM64) Macs, and x86_64
-Vagrant boxes will not boot on ARM64 hypervisors without emulation.
+The included Vagrantfile uses "bento/ubuntu-24.04". On Apple Silicon, Vagrant
+selects Bento's ARM64 VirtualBox box. Recent Bento ARM64 box builds use OVF
+features requiring VirtualBox 7.2 or newer; an older VirtualBox can fail during
+box.ovf import (for example, "Unknown resource type 32768"). Check the installed
+version with "VBoxManage --version". x86_64 Vagrant boxes will not boot on
+ARM64 hypervisors without emulation.
 
-FALLBACK FOR APPLE SILICON OR EXISTING LINUX VMS:
-If your host cannot run Vagrant + VirtualBox/libvirt:
+FALLBACK FOR OLDER VIRTUALBOX INSTALLATIONS OR EXISTING LINUX VMS:
+If your host cannot run a compatible Vagrant provider:
   1. Provision 3 Ubuntu 24.04 LTS VMs using UTM, Multipass, VMware Fusion,
      Parallels, Proxmox, or cloud instances.
   2. Edit "inventory/hosts.yml" and update "ansible_host", "ansible_user", and
@@ -94,7 +97,7 @@ This project implements three distinct operational modes:
   10. Destroy lab VMs when finished:
        make lab-destroy
 
-5. CONFIGURABLE VARIABLES (group_vars/all.yml)
+5. CONFIGURABLE VARIABLES (inventory/group_vars/all.yml)
 ----------------------------------------------
   - lab_environment_name              : Environment label included in health JSON.
   - supported_os_family               : Expected OS family ("Debian").

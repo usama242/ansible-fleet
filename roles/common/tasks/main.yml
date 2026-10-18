@@ -176,10 +176,10 @@
             state: started
             enabled: true
 
-        - name: Reload nginx if site configuration changed
+        - name: Restart nginx if site configuration changed
           ansible.builtin.service:
             name: nginx
-            state: reloaded
+            state: restarted
           when: nginx_site_config is changed or nginx_default_removed is changed or nginx_site_enabled is changed
 
     - name: Set active failure stage to read_only_audit
