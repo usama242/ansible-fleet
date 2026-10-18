@@ -21,7 +21,7 @@ else
   echo "[WARN] ansible-playbook not found yet. Run 'make venv' to install Ansible in .venv."
 fi
 
-if [[ "${ARCH}" == "arm64" ert{}ert{} "${ARCH}" == "aarch64" ]]; then
+if [[ "${ARCH}" == "arm64" || "${ARCH}" == "aarch64" ]]; then
   echo "[WARN] ARM64 / Apple Silicon host detected."
   echo "       VirtualBox and x86_64 boxes do not work reliably on Apple Silicon."
   echo "       If 'vagrant up' fails, use existing Ubuntu 24.04 LTS VMs and update inventory/hosts.yml."

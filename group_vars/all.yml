@@ -45,7 +45,7 @@ patch_batch_pause_seconds: 5
 
 # Optional maintenance / drain behavior during patching
 patch_enable_maintenance_mode: true
-patch_drain_Wait_seconds: 2
+patch_drain_wait_seconds: 2
 
 # Reboot handling
 patch_allow_reboot: true

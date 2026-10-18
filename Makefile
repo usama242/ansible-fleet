@@ -43,7 +43,7 @@ audit:
 	$(ANSIBLE_PLAYBOOK) -i $(INVENTORY) playbooks/audit.yml
 
 patch-check:
-	$(ANSIBLE_PLAYBOOK) -i $(INVENTORY) playbooks/patch.yml --check -e "patch_Execution_mode=check"
+	$(ANSIBLE_PLAYBOOK) -i $(INVENTORY) playbooks/patch.yml --check
 
 patch:
 	$(ANSIBLE_PLAYBOOK) -i $(INVENTORY) playbooks/patch.yml

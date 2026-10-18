@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Validates Python syntax across scripts and checks that required project files
-exist and no prohibited Markdown source files are tracked outside runtime reports.
+exist.
 """
 
 import pathlib
@@ -11,6 +11,8 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 REQUIRED_FILES = [
+    "README.md",
+    "docs/README.md",
     "LICENSE",
     ".gitignore",
     "Makefile",
@@ -50,24 +52,6 @@ def main() -> int:
         if ".venv" in path.parts:
             continue
         py_compile.compile(str(path), doraise=True)
-
-    prohibited_md = []
-    for path in ROOT.rglob("*"):
-        if not path.is_file():
-            continue
-        if ".venv" in path.parts or ".vagrant" in path.parts:
-            continue
-        if path.suffix.lower() in {".md", ".markdown"}:
-            rel_parts = path.relative_to(ROOT).parts
-            if rel_parts[0] != "reports":
-                prohibited_md.append(str(path.relative_to(ROOT)))
-
-    if prohibited_md:
-        print(
-            f"[ERROR] Found prohibited Markdown source files outside reports/: {prohibited_md}",
-            file=sys.stderr,
-        )
-        return 1
 
     print("[OK] Project structure and Python files validated successfully.")
     return 0

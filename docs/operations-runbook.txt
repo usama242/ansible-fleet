@@ -119,7 +119,7 @@ This project implements three distinct operational modes:
   - patch_serial_batch                : Number of hosts patched per batch (1).
   - patch_batch_pause_seconds         : Pause seconds between batches (5).
   - patch_enable_maintenance_mode     : Return HTTP 503 during host patching (true).
-  - patch_drain_Wait_seconds          : Drain wait after enabling HTTP 503 (2).
+  - patch_drain_wait_seconds          : Drain wait after enabling HTTP 503 (2).
   - patch_allow_reboot                : Reboot host if /var/run/reboot-required exists (true).
   - patch_reboot_timeout              : Max seconds to wait for reboot (300).
   - patch_post_reboot_delay           : Delay after reboot before testing SSH (5).

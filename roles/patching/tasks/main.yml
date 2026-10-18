@@ -106,10 +106,10 @@
 
     - name: Wait for connection drain grace period
       ansible.builtin.pause:
-        seconds: "{{ patch_drain_Wait_seconds | int }}"
+        seconds: "{{ patch_drain_wait_seconds | int }}"
       when:
         - patch_enable_maintenance_mode | bool
-        - (patch_drain_Wait_seconds | int) > 0
+        - (patch_drain_wait_seconds | int) > 0
         - not (ansible_check_mode | bool)
 
     - name: Set active stage to fault_injection_check
